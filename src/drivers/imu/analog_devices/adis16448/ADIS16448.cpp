@@ -95,24 +95,23 @@ static int16_t convert12BitToINT16(uint16_t word)
 	return output;
 }
 
-ADIS16448::ADIS16448(I2CSPIBusOption bus_option, int bus, uint32_t device, enum Rotation rotation, int bus_frequency,
-		     spi_drdy_gpio_t drdy_gpio) :
-	SPI(DRV_IMU_DEVTYPE_ADIS16448, MODULE_NAME, bus, device, SPIDEV_MODE3, bus_frequency),
-	I2CSPIDriver(MODULE_NAME, px4::device_bus_to_wq(get_device_id()), bus_option, bus),
-	_drdy_gpio(drdy_gpio), // TODO: DRDY disabled
-	_px4_accel(get_device_id(), rotation),
+ADIS16448::ADIS16448(const I2CSPIDriverConfig &config) :
+	SPI(config),
+	I2CSPIDriver(config),
+	_drdy_gpio(config.drdy_gpio), // TODO: DRDY disabled
+	_px4_accel(get_device_id(), config.rotation),
 	_px4_baro(get_device_id()),
-	_px4_gyro(get_device_id(), rotation),
-	_px4_mag(get_device_id(), rotation)
+	_px4_gyro(get_device_id(), config.rotation),
+	_px4_mag(get_device_id(), config.rotation)
 {
 }
 
 ADIS16448::~ADIS16448()
 {
 	perf_free(_reset_perf);
-	perf_free(_perf_crc_bad);
 	perf_free(_bad_register_perf);
 	perf_free(_bad_transfer_perf);
+	perf_free(_perf_crc_bad);
 }
 
 int ADIS16448::init()
@@ -147,9 +146,9 @@ void ADIS16448::print_status()
 	I2CSPIDriverBase::print_status();
 
 	perf_print_counter(_reset_perf);
-	perf_print_counter(_perf_crc_bad);
 	perf_print_counter(_bad_register_perf);
 	perf_print_counter(_bad_transfer_perf);
+	perf_print_counter(_perf_crc_bad);
 }
 
 int ADIS16448::probe()
@@ -159,25 +158,24 @@ int ADIS16448::probe()
 		PX4_WARN("Power-On Start-Up Time is 205 ms");
 	}
 
-	const uint16_t PROD_ID = RegisterRead(Register::PROD_ID);
+	for (int attempt = 0; attempt < 3; attempt++) {
+		const uint16_t PROD_ID = RegisterRead(Register::PROD_ID);
 
-	if (PROD_ID != Product_identification) {
-		DEVICE_DEBUG("unexpected PROD_ID 0x%02x", PROD_ID);
-		return PX4_ERROR;
+		if (PROD_ID == Product_identification) {
+			const uint16_t SERIAL_NUM = RegisterRead(Register::SERIAL_NUM);
+			const uint16_t LOT_ID1 = RegisterRead(Register::LOT_ID1);
+			const uint16_t LOT_ID2 = RegisterRead(Register::LOT_ID2);
+
+			PX4_INFO("Serial Number: 0x%02x, Lot ID1: 0x%02x ID2: 0x%02x", SERIAL_NUM, LOT_ID1, LOT_ID2);
+
+			return PX4_OK;
+
+		} else {
+			DEVICE_DEBUG("unexpected PROD_ID 0x%02x", PROD_ID);
+		}
 	}
 
-	const uint16_t SERIAL_NUM = RegisterRead(Register::SERIAL_NUM);
-	const uint16_t LOT_ID1 = RegisterRead(Register::LOT_ID1);
-	const uint16_t LOT_ID2 = RegisterRead(Register::LOT_ID2);
-
-	PX4_INFO("Serial Number: 0x%02x, Lot ID1: 0x%02x ID2: 0x%02x", SERIAL_NUM, LOT_ID1, LOT_ID2);
-
-	// Only enable CRC-16 for verified lots (HACK to support older ADIS16448AMLZ with no explicit detection)
-	if (LOT_ID1 == 0x1824) {
-		_check_crc = true;
-	}
-
-	return PX4_OK;
+	return PX4_ERROR;
 }
 
 void ADIS16448::RunImpl()
@@ -211,20 +209,40 @@ void ADIS16448::RunImpl()
 					ScheduleDelayed(100_ms);
 
 				} else {
-					PX4_DEBUG("Reset not complete, check again in 10 ms");
-					ScheduleDelayed(10_ms);
+					PX4_DEBUG("Reset not complete, check again in 100 ms");
+					ScheduleDelayed(100_ms);
 				}
 			}
 
 		} else {
 			RegisterWrite(Register::MSC_CTRL, MSC_CTRL_BIT::Internal_self_test);
 			_state = STATE::SELF_TEST_CHECK;
-			ScheduleDelayed(45_ms); // Automatic Self-Test Time 45 ms
+			ScheduleDelayed(90_ms); // Automatic Self-Test Time > 45 ms
 		}
 
 		break;
 
 	case STATE::SELF_TEST_CHECK: {
+			const uint16_t MSC_CTRL = RegisterRead(Register::MSC_CTRL);
+
+			if (MSC_CTRL & MSC_CTRL_BIT::Internal_self_test) {
+				// self test not finished, check again
+				if (hrt_elapsed_time(&_reset_timestamp) < 1000_ms) {
+					ScheduleDelayed(45_ms);
+					PX4_DEBUG("self test not complete, check again in 45 ms");
+					return;
+
+				} else {
+					// still not cleared, fail self test
+					_self_test_passed = false;
+					_state = STATE::RESET;
+					ScheduleDelayed(1000_ms);
+					return;
+				}
+			}
+
+			bool test_passed = true;
+
 			const uint16_t DIAG_STAT = RegisterRead(Register::DIAG_STAT);
 
 			if (DIAG_STAT & DIAG_STAT_BIT::Self_test_diagnostic_error_flag) {
@@ -248,6 +266,7 @@ void ADIS16448::RunImpl()
 
 				if (gyro_x_fail || gyro_y_fail || gyro_z_fail) {
 					PX4_ERR("gyroscope self-test failure");
+					test_passed = false;
 				}
 
 				// Accelerometer
@@ -257,18 +276,20 @@ void ADIS16448::RunImpl()
 
 				if (accel_x_fail || accel_y_fail || accel_z_fail) {
 					PX4_ERR("accelerometer self-test failure");
+					test_passed = false;
 				}
+			}
 
-				_self_test_passed = false;
-				_state = STATE::RESET;
-				ScheduleDelayed(1000_ms);
-
-			} else {
+			if (test_passed) {
 				PX4_DEBUG("self test passed");
 				_self_test_passed = true;
-				_state = STATE::RESET;
-				ScheduleNow();
+
+			} else {
+				_self_test_passed = false;
 			}
+
+			_state = STATE::RESET;
+			ScheduleDelayed(10_ms);
 		}
 
 		break;
@@ -364,18 +385,38 @@ void ADIS16448::RunImpl()
 					_px4_accel.set_temperature(temperature);
 					_px4_gyro.set_temperature(temperature);
 
+					bool imu_updated = false;
+
 					// sensor's frame is +x forward, +y left, +z up
 					//  flip y & z to publish right handed with z down (x forward, y right, z down)
 					const int16_t accel_x = buffer.XACCL_OUT;
 					const int16_t accel_y = (buffer.YACCL_OUT == INT16_MIN) ? INT16_MAX : -buffer.YACCL_OUT;
 					const int16_t accel_z = (buffer.ZACCL_OUT == INT16_MIN) ? INT16_MAX : -buffer.ZACCL_OUT;
 
+					if (accel_x != _accel_prev[0] || accel_y != _accel_prev[1] || accel_z != _accel_prev[2]) {
+						imu_updated = true;
+
+						_accel_prev[0] = accel_x;
+						_accel_prev[1] = accel_y;
+						_accel_prev[2] = accel_z;
+					}
+
 					const int16_t gyro_x = buffer.XGYRO_OUT;
 					const int16_t gyro_y = (buffer.YGYRO_OUT == INT16_MIN) ? INT16_MAX : -buffer.YGYRO_OUT;
 					const int16_t gyro_z = (buffer.ZGYRO_OUT == INT16_MIN) ? INT16_MAX : -buffer.ZGYRO_OUT;
 
-					_px4_accel.update(now, accel_x, accel_y, accel_z);
-					_px4_gyro.update(now, gyro_x, gyro_y, gyro_z);
+					if (gyro_x != _gyro_prev[0] || gyro_y != _gyro_prev[1] || gyro_z != _gyro_prev[2]) {
+						imu_updated = true;
+
+						_gyro_prev[0] = gyro_x;
+						_gyro_prev[1] = gyro_y;
+						_gyro_prev[2] = gyro_z;
+					}
+
+					if (imu_updated) {
+						_px4_accel.update(now, accel_x, accel_y, accel_z);
+						_px4_gyro.update(now, gyro_x, gyro_y, gyro_z);
+					}
 
 					// DIAG_STAT bit 7: New data, xMAGN_OUT/BARO_OUT
 					if (buffer.DIAG_STAT & DIAG_STAT_BIT::New_data_xMAGN_OUT_BARO_OUT) {
@@ -435,6 +476,27 @@ void ADIS16448::RunImpl()
 
 bool ADIS16448::Configure()
 {
+	const uint16_t LOT_ID1 = RegisterRead(Register::LOT_ID1);
+
+	// Only enable CRC-16 for verified lots (HACK to support older ADIS16448AMLZ with no explicit detection)
+	if (LOT_ID1 == 0x1824) {
+		_check_crc = true;
+
+		if (_perf_crc_bad == nullptr) {
+			_perf_crc_bad = perf_alloc(PC_COUNT, MODULE_NAME": CRC16 bad");
+		}
+
+	} else {
+		_check_crc = false;
+
+		for (auto &reg_cfg : _register_cfg) {
+			if (reg_cfg.reg == Register::MSC_CTRL) {
+				reg_cfg.set_bits = reg_cfg.set_bits & ~MSC_CTRL_BIT::CRC16_for_burst;
+				break;
+			}
+		}
+	}
+
 	// first set and clear all configured register bits
 	for (const auto &reg_cfg : _register_cfg) {
 		RegisterSetAndClearBits(reg_cfg.reg, reg_cfg.set_bits, reg_cfg.clear_bits);

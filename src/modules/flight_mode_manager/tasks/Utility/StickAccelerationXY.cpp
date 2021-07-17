@@ -37,7 +37,7 @@
 
 #include "StickAccelerationXY.hpp"
 
-#include <ecl/geo/geo.h>
+#include <geo/geo.h>
 #include "Sticks.hpp"
 
 using namespace matrix;
@@ -62,7 +62,7 @@ void StickAccelerationXY::resetVelocity(const matrix::Vector2f &velocity)
 void StickAccelerationXY::resetAcceleration(const matrix::Vector2f &acceleration)
 {
 	_acceleration_slew_rate_x.setForcedValue(acceleration(0));
-	_acceleration_slew_rate_x.setForcedValue(acceleration(1));
+	_acceleration_slew_rate_y.setForcedValue(acceleration(1));
 }
 
 void StickAccelerationXY::generateSetpoints(Vector2f stick_xy, const float yaw, const float yaw_sp, const Vector3f &pos,
@@ -78,7 +78,7 @@ void StickAccelerationXY::generateSetpoints(Vector2f stick_xy, const float yaw, 
 	Sticks::limitStickUnitLengthXY(stick_xy);
 	Sticks::rotateIntoHeadingFrameXY(stick_xy, yaw, yaw_sp);
 	_acceleration_setpoint = stick_xy.emult(acceleration_scale);
-	applyFeasibilityLimit(dt);
+	applyJerkLimit(dt);
 
 	// Add drag to limit speed and brake again
 	Vector2f drag = calculateDrag(acceleration_scale.edivide(velocity_scale), dt, stick_xy, _velocity_setpoint);
@@ -109,7 +109,7 @@ void StickAccelerationXY::getSetpoints(Vector3f &pos_sp, Vector3f &vel_sp, Vecto
 	acc_sp.xy() = _acceleration_setpoint;
 }
 
-void StickAccelerationXY::applyFeasibilityLimit(const float dt)
+void StickAccelerationXY::applyJerkLimit(const float dt)
 {
 	// Apply jerk limit - acceleration slew rate
 	// Scale each jerk limit with the normalized projection of the acceleration

@@ -81,14 +81,6 @@ static const char *param_default_file = PX4_ROOTFSDIR"/eeprom/parameters";
 
 static char *param_user_file = nullptr;
 
-#ifdef __PX4_QURT
-#define PARAM_OPEN	px4_open
-#define PARAM_CLOSE	px4_close
-#else
-#define PARAM_OPEN	open
-#define PARAM_CLOSE	close
-#endif
-
 #include <px4_platform_common/workqueue.h>
 /* autosaving variables */
 static hrt_abstime last_autosave_timestamp = 0;
@@ -497,12 +489,12 @@ param_get(param_t param, void *val)
 	perf_count(param_get_perf);
 
 	if (!handle_in_range(param)) {
-		PX4_ERR("get: param %d invalid", param);
+		PX4_ERR("get: param %" PRId16 " invalid", param);
 		return PX4_ERROR;
 	}
 
 	if (!params_active[param]) {
-		PX4_WARN("get: param %d (%s) not active", param, param_name(param));
+		PX4_DEBUG("get: param %" PRId16 " (%s) not active", param, param_name(param));
 	}
 
 	int result = PX4_ERROR;
@@ -625,7 +617,6 @@ param_get_system_default_value(param_t param, void *default_val)
 	}
 
 	int ret = PX4_OK;
-	param_lock_reader();
 
 	switch (param_type(param)) {
 	case PARAM_TYPE_INT32:
@@ -641,7 +632,6 @@ param_get_system_default_value(param_t param, void *default_val)
 		break;
 	}
 
-	param_unlock_reader();
 	return ret;
 }
 
@@ -1135,11 +1125,11 @@ int param_save_default()
 
 	while (res != OK && attempts > 0) {
 		// write parameters to file
-		int fd = PARAM_OPEN(filename, O_WRONLY | O_CREAT, PX4_O_MODE_666);
+		int fd = ::open(filename, O_WRONLY | O_CREAT, PX4_O_MODE_666);
 
 		if (fd > -1) {
 			res = param_export(fd, false, nullptr);
-			PARAM_CLOSE(fd);
+			::close(fd);
 
 			if (res != PX4_OK) {
 				PX4_ERR("param_export failed, retrying %d", attempts);
@@ -1172,7 +1162,7 @@ param_load_default()
 		return flash_param_load();
 	}
 
-	int fd_load = PARAM_OPEN(filename, O_RDONLY);
+	int fd_load = ::open(filename, O_RDONLY);
 
 	if (fd_load < 0) {
 		/* no parameter file is OK, otherwise this is an error */
@@ -1185,7 +1175,7 @@ param_load_default()
 	}
 
 	int result = param_load(fd_load);
-	PARAM_CLOSE(fd_load);
+	::close(fd_load);
 
 	if (result != 0) {
 		PX4_ERR("error reading parameters from '%s'", filename);
@@ -1417,25 +1407,37 @@ out:
 static int
 param_import_internal(int fd, bool mark_saved)
 {
-	bson_decoder_s decoder;
-	param_import_state state;
-	int result = -1;
+	for (int attempt = 1; attempt < 5; attempt++) {
+		bson_decoder_s decoder;
+		param_import_state state;
 
-	if (bson_decoder_init_file(&decoder, fd, param_import_callback, &state)) {
-		PX4_ERR("decoder init failed");
-		return PX4_ERROR;
+		if (bson_decoder_init_file(&decoder, fd, param_import_callback, &state) == 0) {
+			state.mark_saved = mark_saved;
+
+			int result = -1;
+
+			do {
+				result = bson_decoder_next(&decoder);
+
+			} while (result > 0);
+
+			if (result == 0) {
+				PX4_INFO("BSON document size %" PRId32 " bytes, decoded %" PRId32 " bytes", decoder.total_document_size,
+					 decoder.total_decoded_size);
+				return 0;
+
+			} else {
+				PX4_ERR("param import failed (%d) attempt %d, retrying", result, attempt);
+			}
+
+		} else {
+			PX4_ERR("param import bson decoder init failed attempt %d, retrying", attempt);
+		}
+
+		lseek(fd, 0, SEEK_SET);
 	}
 
-	state.mark_saved = mark_saved;
-
-	do {
-		result = bson_decoder_next(&decoder);
-
-	} while (result > 0);
-
-	PX4_INFO("BSON document size %d bytes, decoded %d bytes", decoder.total_document_size, decoder.total_decoded_size);
-
-	return result;
+	return -1;
 }
 
 int

@@ -37,7 +37,7 @@ px4_add_board(
 		imu/invensense/icm20602
 		imu/invensense/icm20689
 		imu/invensense/icm20948 # required for ak09916 mag
-		irlock
+		#irlock
 		lights # all available light drivers
 		#lights/rgbled_pwm
 		#magnetometer # all available magnetometer drivers
@@ -56,6 +56,7 @@ px4_add_board(
 		#roboclaw
 		#rpm
 		safety_button
+		smart_battery/batmon
 		#telemetry # all available telemetry drivers
 		test_ppm
 		tone_alarm
@@ -91,15 +92,15 @@ px4_add_board(
 		#rover_pos_control
 		sensors
 		#sih
-		temperature_compensation
+		#temperature_compensation
 		#uuv_att_control
 		#uuv_pos_control
 		#vmount
-		vtol_att_control
+		#vtol_att_control
 	SYSTEMCMDS
 		#bl_update
 		dmesg
-		dumpfile
+		#dumpfile
 		#esc_calib
 		#gpio
 		hardfault_log
@@ -107,7 +108,7 @@ px4_add_board(
 		led_control
 		mft
 		mixer
-		motor_ramp
+		#motor_ramp
 		motor_test
 		mtd
 		nshterm
@@ -129,7 +130,7 @@ px4_add_board(
 		work_queue
 	EXAMPLES
 		fake_gps
-		#fake_gyro
+		#fake_imu
 		#fake_magnetometer
 		#fixedwing_control # Tutorial code from https://px4.io/dev/example_fixedwing_control
 		#hello

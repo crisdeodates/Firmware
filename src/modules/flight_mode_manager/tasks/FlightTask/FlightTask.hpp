@@ -53,7 +53,7 @@
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_trajectory_waypoint.h>
 #include <uORB/topics/home_position.h>
-#include <lib/ecl/geo/geo.h>
+#include <lib/geo/geo.h>
 #include <lib/weather_vane/WeatherVane.hpp>
 
 struct ekf_reset_counters_s {
@@ -186,13 +186,14 @@ public:
 protected:
 	uORB::SubscriptionData<vehicle_local_position_s> _sub_vehicle_local_position{ORB_ID(vehicle_local_position)};
 	uORB::SubscriptionData<home_position_s> _sub_home_position{ORB_ID(home_position)};
+	uORB::Subscription _vehicle_local_position_setpoint_sub{ORB_ID(vehicle_local_position_setpoint)};
 
 	/** Reset all setpoints to NAN */
 	void _resetSetpoints();
 
 	/** Check and update local position */
 	void _evaluateVehicleLocalPosition();
-
+	void _evaluateVehicleLocalPositionSetpoint();
 	void _evaluateDistanceToGround();
 
 	/** Set constraints to default values */
@@ -244,14 +245,13 @@ protected:
 	 */
 	matrix::Vector3f _position_setpoint;
 	matrix::Vector3f _velocity_setpoint;
+	matrix::Vector3f _velocity_setpoint_feedback;
 	matrix::Vector3f _acceleration_setpoint;
+	matrix::Vector3f _acceleration_setpoint_feedback;
 	matrix::Vector3f _jerk_setpoint;
 
 	float _yaw_setpoint{};
 	float _yawspeed_setpoint{};
-
-	matrix::Vector3f _velocity_setpoint_feedback;
-	matrix::Vector3f _acceleration_setpoint_feedback;
 
 	ekf_reset_counters_s _reset_counters{}; ///< Counters for estimator local position resets
 
